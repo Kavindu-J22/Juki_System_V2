@@ -366,95 +366,152 @@ export const MachineryView = ({ onDispatchMachine }) => {
         </div>
       </div>
 
-      {/* VIEW MACHINE DETAILS MODAL */}
+      {/* VIEW MACHINE DETAILS MODAL — Full Machine Profile */}
       {viewingMachine && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl glass-dropdown rounded-2xl border border-slate-700 p-6 space-y-5 text-slate-100">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div>
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
-                  {viewingMachine.sku}
-                </span>
-                <h3 className="text-lg font-bold text-white mt-1">
-                  {viewingMachine.brand} {viewingMachine.model}
-                </h3>
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-start justify-center p-3 overflow-y-auto">
+          <div className="w-full max-w-3xl glass-dropdown rounded-2xl border border-slate-700 p-5 space-y-4 my-6 text-slate-100">
+            {/* ── Header ── */}
+            <div className="flex items-start justify-between border-b border-slate-800 pb-3 gap-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+                    {viewingMachine.sku}
+                  </span>
+                  <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                    viewingMachine.ownershipType === 'THIRD_PARTY_ASSET'
+                      ? 'bg-amber-950 text-amber-400 border-amber-800'
+                      : 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                  }`}>
+                    {viewingMachine.ownershipType === 'THIRD_PARTY_ASSET' ? '3rd-Party Asset' : 'Our Fleet'}
+                  </span>
+                  {(() => {
+                    const inWh = Math.max(0, (viewingMachine.initialBatchSets || 0) - (viewingMachine.dispatched || 0));
+                    return (
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                        inWh > 0 ? 'bg-emerald-950 text-emerald-400 border-emerald-800' : 'bg-rose-950 text-rose-400 border-rose-800'
+                      }`}>
+                        {inWh > 0 ? `${inWh} Sets Available` : 'Out of Stock'}
+                      </span>
+                    );
+                  })()}
+                </div>
+                <h3 className="text-lg font-bold text-white">{viewingMachine.brand} {viewingMachine.model}</h3>
+                <p className="text-xs text-slate-400 mt-0.5">{viewingMachine.description || 'No description provided'}</p>
               </div>
-              <button
-                onClick={() => setViewingMachine(null)}
-                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400"
-              >
+              <button onClick={() => setViewingMachine(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 shrink-0">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-400">{viewingMachine.description}</p>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Factory FOB Cost:</span>
-                <div className="text-sm font-bold text-white mt-0.5">USD ${viewingMachine.factoryFobUsd}</div>
-                <div className="text-[10px] text-slate-500">Rate: Rs. {viewingMachine.exchangeRate}</div>
+            {/* ── Fleet Availability ── */}
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Fleet Availability</div>
+              <div className="grid grid-cols-3 gap-3 text-xs">
+                {[
+                  { label: 'Initial Batch', value: `${viewingMachine.initialBatchSets || 0} ${viewingMachine.unit || 'SETS'}`, color: 'text-slate-200' },
+                  { label: 'Dispatched',    value: `${viewingMachine.dispatched || 0} ${viewingMachine.unit || 'SETS'}`,        color: 'text-rose-400' },
+                  { label: 'In Warehouse',  value: `${Math.max(0,(viewingMachine.initialBatchSets||0)-(viewingMachine.dispatched||0))} ${viewingMachine.unit||'SETS'}`, color: 'text-emerald-400 font-bold' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-center">
+                    <div className="text-slate-400 text-[10px] mb-1">{label}</div>
+                    <div className={`text-base font-bold ${color}`}>{value}</div>
+                  </div>
+                ))}
               </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Customs Duty & Port:</span>
-                <div className="text-sm font-bold text-amber-400 mt-0.5">
-                  LKR {Number(viewingMachine.customsDutyLkr || 0).toLocaleString()}
+              {viewingMachine.unitWeight && (
+                <div className="text-[11px] text-slate-500 mt-1.5 ml-1">
+                  Unit Weight: <span className="text-slate-300 font-semibold">{viewingMachine.unitWeight}</span>
                 </div>
-              </div>
+              )}
+            </div>
 
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Landed Unit Cost:</span>
-                <div className="text-sm font-bold text-emerald-400 mt-0.5">
-                  LKR {Number(viewingMachine.landedUnitCost || 0).toLocaleString()}
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Monthly Rent:</span>
-                <div className="text-sm font-bold text-cyan-400 mt-0.5">
-                  LKR {Number(viewingMachine.rentPricePerMonth || 0).toLocaleString()}
+            {/* ── Financial Breakdown ── */}
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Financial Cost Breakdown</div>
+              <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div>
+                    <div className="text-slate-400">Factory FOB</div>
+                    <div className="font-bold text-white">USD ${Number(viewingMachine.factoryFobUsd || 0).toLocaleString()}</div>
+                    <div className="text-[10px] text-slate-500">Rate: Rs.{viewingMachine.exchangeRate}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Base LKR (FOB×Rate)</div>
+                    <div className="font-bold text-slate-200">LKR {((viewingMachine.factoryFobUsd||0)*(viewingMachine.exchangeRate||0)).toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Customs & Port</div>
+                    <div className="font-bold text-amber-400">LKR {Number(viewingMachine.customsDutyLkr || 0).toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Landed Unit Cost</div>
+                    <div className="font-bold text-emerald-400 text-sm">LKR {Number(viewingMachine.landedUnitCost || 0).toLocaleString()}</div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Wholesale Benchmark:</span>
-                <div className="text-base font-bold text-white mt-0.5">
-                  LKR {Number(viewingMachine.wholesaleBenchmark || 0).toLocaleString()}
+            {/* ── Pricing Benchmarks ── */}
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Pricing Benchmarks & Rental Rate</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
+                  <div className="text-slate-400 mb-0.5">Wholesale Price</div>
+                  <div className="text-lg font-bold text-white">LKR {Number(viewingMachine.wholesaleBenchmark || 0).toLocaleString()}</div>
+                  <div className="text-[10px] text-emerald-400 mt-0.5">
+                    Margin: {viewingMachine.wholesaleBenchmark > 0
+                      ? (((viewingMachine.wholesaleBenchmark - (viewingMachine.landedUnitCost||0)) / viewingMachine.wholesaleBenchmark) * 100).toFixed(1)
+                      : 0}% over landed cost
+                  </div>
                 </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-                <span className="text-slate-400">Retail Benchmark:</span>
-                <div className="text-base font-bold text-white mt-0.5">
-                  LKR {Number(viewingMachine.retailBenchmark || 0).toLocaleString()}
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800">
+                  <div className="text-slate-400 mb-0.5">Retail Price</div>
+                  <div className="text-lg font-bold text-white">LKR {Number(viewingMachine.retailBenchmark || 0).toLocaleString()}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    Premium over wholesale: +LKR {Number((viewingMachine.retailBenchmark||0)-(viewingMachine.wholesaleBenchmark||0)).toLocaleString()}
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-cyan-950/40 border border-cyan-800/60">
+                  <div className="text-slate-400 mb-0.5">Monthly Rental Rate</div>
+                  <div className="text-lg font-bold text-cyan-300">LKR {Number(viewingMachine.rentPricePerMonth || 0).toLocaleString()}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">per machine / per month</div>
                 </div>
               </div>
             </div>
 
+            {/* ── 3rd Party ── */}
             {viewingMachine.ownershipType === 'THIRD_PARTY_ASSET' && (
-              <div className="p-3.5 rounded-xl bg-amber-950/30 border border-amber-800/60 text-xs text-amber-200 space-y-1">
-                <div className="font-bold flex items-center gap-1.5">
-                  <Building className="w-4 h-4 text-amber-400" />
-                  <span>Third-Party Outsourced Liability:</span>
+              <div className="p-3.5 rounded-xl bg-amber-950/30 border border-amber-800/60 text-xs text-amber-200 space-y-1.5">
+                <div className="font-bold flex items-center gap-1.5 text-amber-400">
+                  <Building className="w-4 h-4" />
+                  Third-Party Outsourced Asset — Liability Details
                 </div>
-                <div>Company: <strong>{viewingMachine.thirdPartyCompany}</strong></div>
-                <div>Monthly Cost Owed: <strong>LKR {Number(viewingMachine.thirdPartyRentalCostOwed || 0).toLocaleString()}</strong></div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>Partner Company: <strong className="text-amber-100">{viewingMachine.thirdPartyCompany}</strong></div>
+                  <div>Monthly Cost Owed: <strong className="text-amber-100">LKR {Number(viewingMachine.thirdPartyRentalCostOwed || 0).toLocaleString()}</strong></div>
+                </div>
+                <div className="text-[10px] text-amber-600">
+                  ⚠ Net rental margin = Monthly Rent Received − LKR {Number(viewingMachine.thirdPartyRentalCostOwed || 0).toLocaleString()} owed to partner.
+                </div>
               </div>
             )}
 
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => {
-                  setViewingMachine(null);
-                  onDispatchMachine(viewingMachine);
-                }}
-                className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 font-bold text-xs text-white"
-              >
-                Proceed to Dispatch
-              </button>
+            {/* ── Footer ── */}
+            <div className="flex items-center justify-between pt-1 border-t border-slate-800">
+              <div className="text-[10px] text-slate-500">
+                Added: {viewingMachine.createdAt ? new Date(viewingMachine.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : 'N/A'}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setViewingMachine(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition">Close</button>
+                <button
+                  disabled={Math.max(0,(viewingMachine.initialBatchSets||0)-(viewingMachine.dispatched||0)) === 0}
+                  onClick={() => { setViewingMachine(null); onDispatchMachine(viewingMachine); }}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 font-bold text-xs text-white transition disabled:opacity-40">
+                  Dispatch →
+                </button>
+              </div>
             </div>
           </div>
         </div>
