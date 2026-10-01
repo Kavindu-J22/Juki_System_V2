@@ -21,6 +21,8 @@ const MainApp = () => {
   const { user, loading } = useAuth();
   const [currentView, setCurrentView] = useState('dashboard');
   const [alertCounts, setAlertCounts] = useState({ total: 0, overdue: 0, dueToday: 0, dueIn3Days: 0, dueIn7Days: 0 });
+  // Ledger deep-link search: set by Dashboard when user clicks "Collect Rent"
+  const [ledgerSearch, setLedgerSearch] = useState('');
 
   // Dispatch modal state
   const [dispatchMachine, setDispatchMachine] = useState(null);
@@ -99,7 +101,10 @@ const MainApp = () => {
         <main className="flex-1 overflow-y-auto p-4 md:p-8 max-w-7xl mx-auto w-full">
           {currentView === 'dashboard' && (
             <DashboardView
-              onNavigate={setCurrentView}
+              onNavigate={(view, search = '') => {
+                if (search) setLedgerSearch(search);
+                setCurrentView(view);
+              }}
               onPrint={handlePrintDocument}
             />
           )}
@@ -113,6 +118,8 @@ const MainApp = () => {
           {currentView === 'salesLedger' && (
             <SalesLedgerView
               onPrint={handlePrintDocument}
+              initialSearch={ledgerSearch}
+              onClearInitialSearch={() => setLedgerSearch('')}
             />
           )}
 

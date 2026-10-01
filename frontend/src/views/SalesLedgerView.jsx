@@ -20,14 +20,17 @@ import {
   ChevronRight,
 } from 'lucide-react';
 
-export const SalesLedgerView = ({ onPrint }) => {
+export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSearch }) => {
   const { t } = useAuth();
   const { addToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState('RENT'); // 'RENT' | 'BUY'
+  // Initialise directly from prop so the very first fetch is already filtered
+  const [activeTab, setActiveTab] = useState(
+    initialSearch && initialSearch.startsWith('AGR') ? 'RENT' : 'RENT'
+  );
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch || '');
 
   // Modals & Drawers
   const [inspectingTx, setInspectingTx] = useState(null);
@@ -70,6 +73,14 @@ export const SalesLedgerView = ({ onPrint }) => {
   useEffect(() => {
     fetchTransactions();
   }, [activeTab, search]);
+
+  // On mount: notify parent to clear ledgerSearch so future navigation starts fresh
+  useEffect(() => {
+    if (initialSearch && onClearInitialSearch) {
+      onClearInitialSearch();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update Delivery Status (Pending -> Ongoing -> Hand Overed)
   const handleUpdateDelivery = async (txId, newStatus) => {

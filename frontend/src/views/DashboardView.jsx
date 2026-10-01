@@ -181,7 +181,7 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
           <div className="divide-y divide-slate-800/80">
             {alerts.slice(0, 4).map((alert, i) => (
               <div key={i} className="py-2.5 flex items-center justify-between text-xs gap-3">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                       alert.alertType === 'OVERDUE'
@@ -193,6 +193,10 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
                   >
                     {alert.alertLabel}
                   </span>
+                  {/* Document Number */}
+                  <span className="font-mono font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-1.5 py-0.5 rounded text-[10px]">
+                    {alert.invoiceNumber}
+                  </span>
                   <span className="font-semibold text-white">{alert.customerName}</span>
                   <span className="text-slate-400 hidden sm:inline">({alert.machineryModel})</span>
                 </div>
@@ -202,8 +206,8 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
                     LKR {Number(alert.monthlyRent || 0).toLocaleString()}
                   </span>
                   <button
-                    onClick={() => onNavigate('salesLedger')}
-                    className="text-cyan-400 hover:text-cyan-300 font-semibold"
+                    onClick={() => onNavigate('salesLedger', alert.invoiceNumber)}
+                    className="text-cyan-400 hover:text-cyan-300 font-semibold whitespace-nowrap"
                   >
                     Collect Rent →
                   </button>
