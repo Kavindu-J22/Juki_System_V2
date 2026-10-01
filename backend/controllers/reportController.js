@@ -4,6 +4,7 @@ const Customer = require('../models/Customer');
 const Expense = require('../models/Expense');
 const PartnerLedger = require('../models/PartnerLedger');
 const { checkRentalAlerts } = require('../services/alertService');
+const { getSchedulerStatus, executeAutomatedReminderScan } = require('../services/schedulerService');
 const XLSX = require('xlsx');
 
 // @desc    Get real-time Executive Dashboard Metrics
@@ -151,7 +152,8 @@ const getDashboardStats = async (req, res) => {
         salariesPaid,
         liabilitiesPaid,
         operatingOpsPaid,
-      }
+      },
+      scheduler: getSchedulerStatus(),
     });
   } catch (error) {
     console.error('getDashboardStats error:', error);
@@ -434,18 +436,41 @@ const exportReportExcel = async (req, res) => {
   }
 };
 
-// @desc    Trigger automated rental alert check & email dispatch
+// @desc    Trigger automated rental alert check & email dispatch (Manual Dashboard Action)
 // @route   POST /api/reports/trigger-alerts
 // @access  Private
 const triggerAlertCheck = async (req, res) => {
   try {
     const { sendEmails = false } = req.body;
-    const alerts = await checkRentalAlerts(sendEmails);
+    let alerts = [];
+
+    if (sendEmails) {
+      const result = await executeAutomatedReminderScan('MANUAL_DASHBOARD_BUTTON');
+      alerts = result.alerts || [];
+    } else {
+      alerts = await checkRentalAlerts(false);
+    }
+
     res.json({
       success: true,
       message: `Checked ${alerts.length} active rental alerts. Emails sent: ${sendEmails}`,
       count: alerts.length,
+      scheduler: getSchedulerStatus(),
       alerts,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get automated scheduler status & logs
+// @route   GET /api/reports/scheduler-status
+// @access  Private
+const getScheduler = async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      scheduler: getSchedulerStatus(),
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -457,4 +482,5 @@ module.exports = {
   getDetailedReports,
   exportReportExcel,
   triggerAlertCheck,
+  getScheduler,
 };

@@ -39,6 +39,8 @@ export const translations = {
     dueIn3Days: 'Due in 3 Days',
     dueIn7Days: 'Due in 7 Days',
     sendEmailAlerts: 'Send Email Reminders',
+    autoReminderSchedule: 'Automated Reminders: Daily at 12:00 AM & 12:00 PM',
+    nextScheduledRun: 'Next Auto-Run',
     emailTriggered: 'Alert Emails Dispatched Successfully',
 
     // Actions & Buttons
@@ -172,6 +174,8 @@ export const translations = {
     dueIn3Days: 'දින 3 කින් ගෙවිය යුතුයි',
     dueIn7Days: 'දින 7 කින් ගෙවිය යුතුයි',
     sendEmailAlerts: 'ඊමේල් මතක් කිරීම් යවන්න',
+    autoReminderSchedule: 'ස්වයංක්‍රීය මතක් කිරීම්: දිනපතා පෙ.ව. 12:00 සහ ප.ව. 12:00',
+    nextScheduledRun: 'මීළඟ ස්වයංක්‍රීය ධාවනය',
     emailTriggered: 'ඊමේල් දැනුම්දීම් සාර්ථකව යවන ලදී',
 
     // Actions & Buttons

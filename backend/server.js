@@ -4,6 +4,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const connectDB = require('./config/db');
 const { checkRentalAlerts } = require('./services/alertService');
+const { initAutomatedReminders } = require('./services/schedulerService');
 
 // Connect to MongoDB
 connectDB();
@@ -43,18 +44,16 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Periodic rental alert check (Runs on startup, then every 6 hours)
+// Initialize Automated Daily Email Reminders Schedule (Runs 12:00 AM & 12:00 PM Asia/Colombo)
+initAutomatedReminders();
+
+// Startup rental alert deadline scan
 setTimeout(() => {
   console.log('⏰ Running initial rental alert deadline scan...');
   checkRentalAlerts(false).then(alerts => {
-    console.log(`📋 Found ${alerts.length} active rental payment alerts.`);
+    console.log(`📋 Found ${alerts.length} active rental payment alerts on system boot.`);
   });
 }, 5000);
-
-setInterval(() => {
-  console.log('⏰ Running periodic rental alert scan...');
-  checkRentalAlerts(false);
-}, 6 * 60 * 60 * 1000);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
