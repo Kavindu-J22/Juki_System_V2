@@ -196,6 +196,31 @@ export const api = {
     });
     return res.json();
   },
+  updateTransaction: async (id, data) => {
+    const res = await fetch(`${API_BASE}/transactions/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+  markTransactionAsPaid: async (id, paymentMethod = 'Bank Wire/SLIPS', reference = '') => {
+    const res = await fetch(`${API_BASE}/transactions/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ markAsPaid: true, buyDetails: { paymentMethod, reference } }),
+    });
+    return res.json();
+  },
+  payMonthRent: async (id, data) => {
+    const res = await fetch(`${API_BASE}/transactions/${id}/pay-month`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
 
   // Expenses & Liabilities
   getExpenses: async (params = {}) => {

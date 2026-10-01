@@ -290,9 +290,15 @@ export const CustomerCRMView = ({ onPrint }) => {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => onPrint({
-                    customerSnapshot: profileData.customer,
                     transactionType: 'STATEMENT',
-                    rawTransactions: profileData.rawTransactions,
+                    customerSnapshot: profileData.customer,
+                    // pass all statement data through
+                    statementData: {
+                      stats: profileData.stats,
+                      purchasedMachines: profileData.purchasedMachines,
+                      rentedMachines: profileData.rentedMachines,
+                      allSerialNumbers: profileData.allSerialNumbers,
+                    },
                   }, 'CUSTOMER_STATEMENT')}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs shadow transition"
                 >

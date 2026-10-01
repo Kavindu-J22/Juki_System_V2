@@ -510,10 +510,196 @@ const recordPayment = async (req, res) => {
   }
 };
 
+// @desc    Pay a specific month's rent for a RENT transaction
+// @route   POST /api/transactions/:id/pay-month
+// @access  Private
+const payMonthRent = async (req, res) => {
+  try {
+    const { monthNumber, paymentMethod, reference, notes } = req.body;
+    const transaction = await Transaction.findById(req.params.id);
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+    if (transaction.transactionType !== 'RENT') {
+      return res.status(400).json({ success: false, message: 'This endpoint is for RENT transactions only' });
+    }
+
+    // Check if this month is already covered
+    const alreadyCovered = transaction.payments.some(
+      (p) => p.paymentType === 'MONTHLY_RENT' && String(p.monthCovered) === String(monthNumber)
+    );
+    if (alreadyCovered) {
+      return res.status(400).json({ success: false, message: `Month ${monthNumber} rent is already recorded as paid` });
+    }
+
+    const monthlyAmount = (transaction.rentDetails.rentPricePerMonth || 0) * (transaction.quantity || 1);
+
+    const paymentEntry = {
+      date: new Date(),
+      amount: monthlyAmount,
+      paymentType: 'MONTHLY_RENT',
+      paymentMethod: paymentMethod || 'Bank Wire/SLIPS',
+      reference: reference || `Month ${monthNumber} Rent`,
+      monthCovered: String(monthNumber),
+      notes: notes || `Month ${monthNumber} rental payment`,
+      receivedBy: req.user ? req.user.name : 'Staff',
+    };
+
+    transaction.payments.push(paymentEntry);
+    transaction.rentDetails.totalRentalPaid = (transaction.rentDetails.totalRentalPaid || 0) + monthlyAmount;
+    transaction.rentDetails.outstandingRentalBalance = Math.max(
+      0,
+      (transaction.rentDetails.totalRentalPayable || 0) - transaction.rentDetails.totalRentalPaid
+    );
+
+    // Advance nextPaymentDueDate by 1 month
+    if (transaction.rentDetails.nextPaymentDueDate) {
+      const nextDate = new Date(transaction.rentDetails.nextPaymentDueDate);
+      nextDate.setMonth(nextDate.getMonth() + 1);
+      transaction.rentDetails.nextPaymentDueDate = nextDate;
+    }
+    transaction.rentDetails.currentMonthCycle = (transaction.rentDetails.currentMonthCycle || 1) + 1;
+
+    transaction.markModified('rentDetails');
+    await transaction.save();
+
+    res.json({ success: true, message: `Month ${monthNumber} rent payment recorded`, transaction });
+  } catch (error) {
+    console.error('Pay month rent error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update/Edit a Transaction (editable fields only)
+// @route   PUT /api/transactions/:id
+// @access  Private
+const updateTransaction = async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id);
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+
+    const {
+      serialNumbers,
+      deliveryCharges,
+      otherCharges,
+      dispatchDate,
+      // BUY editable
+      buyDetails,
+      // RENT editable
+      rentDetails,
+      // mark as paid shortcut
+      markAsPaid,
+    } = req.body;
+
+    if (serialNumbers !== undefined) transaction.serialNumbers = serialNumbers;
+    if (deliveryCharges !== undefined) transaction.deliveryCharges = Number(deliveryCharges);
+    if (otherCharges !== undefined) transaction.otherCharges = Number(otherCharges);
+    if (dispatchDate !== undefined) transaction.dispatchDate = new Date(dispatchDate);
+
+    if (transaction.transactionType === 'BUY') {
+      if (markAsPaid) {
+        // Fully settle the BUY transaction
+        const outstanding = transaction.buyDetails.outstandingAmount || 0;
+        if (outstanding > 0) {
+          transaction.payments.push({
+            date: new Date(),
+            amount: outstanding,
+            paymentType: 'SALES_SETTLEMENT',
+            paymentMethod: buyDetails?.paymentMethod || 'Bank Wire/SLIPS',
+            reference: buyDetails?.reference || 'Mark as Paid',
+            notes: 'Marked as fully paid by staff',
+            receivedBy: req.user ? req.user.name : 'Staff',
+          });
+          transaction.buyDetails.paidAmount = transaction.buyDetails.totalAmount;
+          transaction.buyDetails.outstandingAmount = 0;
+          transaction.buyDetails.settlementStatus = 'Fully Paid';
+        }
+      } else if (buyDetails) {
+        if (buyDetails.unitPrice !== undefined) {
+          const newUnitPrice = Number(buyDetails.unitPrice);
+          const qty = transaction.quantity || 1;
+          const subtotal = newUnitPrice * qty;
+          const taxAmt = transaction.buyDetails.taxIncluded ? (subtotal * (transaction.buyDetails.taxPercent || 0)) / 100 : 0;
+          const totalAmount = subtotal + taxAmt + (transaction.deliveryCharges || 0) + (transaction.otherCharges || 0);
+          transaction.buyDetails.unitPrice = newUnitPrice;
+          transaction.buyDetails.subtotal = subtotal;
+          transaction.buyDetails.taxAmount = taxAmt;
+          transaction.buyDetails.totalAmount = totalAmount;
+          transaction.buyDetails.outstandingAmount = Math.max(0, totalAmount - (transaction.buyDetails.paidAmount || 0));
+          transaction.buyDetails.settlementStatus =
+            transaction.buyDetails.outstandingAmount === 0 ? 'Fully Paid'
+            : transaction.buyDetails.paidAmount > 0 ? 'Partial Payment' : 'Credit / Pending';
+        }
+        if (buyDetails.paidAmount !== undefined) {
+          transaction.buyDetails.paidAmount = Number(buyDetails.paidAmount);
+          transaction.buyDetails.outstandingAmount = Math.max(0, (transaction.buyDetails.totalAmount || 0) - transaction.buyDetails.paidAmount);
+          transaction.buyDetails.settlementStatus =
+            transaction.buyDetails.outstandingAmount === 0 ? 'Fully Paid'
+            : transaction.buyDetails.paidAmount > 0 ? 'Partial Payment' : 'Credit / Pending';
+        }
+        if (buyDetails.paymentTerms !== undefined) transaction.buyDetails.paymentTerms = buyDetails.paymentTerms;
+        if (buyDetails.paymentReference !== undefined) transaction.buyDetails.paymentReference = buyDetails.paymentReference;
+        if (buyDetails.termsAndConditions !== undefined) transaction.buyDetails.termsAndConditions = buyDetails.termsAndConditions;
+      }
+    } else if (transaction.transactionType === 'RENT') {
+      if (markAsPaid) {
+        // Settle outstanding rental balance
+        const outstanding = transaction.rentDetails.outstandingRentalBalance || 0;
+        if (outstanding > 0) {
+          transaction.payments.push({
+            date: new Date(),
+            amount: outstanding,
+            paymentType: 'MONTHLY_RENT',
+            paymentMethod: rentDetails?.paymentMethod || 'Bank Wire/SLIPS',
+            reference: rentDetails?.reference || 'Mark as Paid',
+            notes: 'Marked as fully paid by staff',
+            receivedBy: req.user ? req.user.name : 'Staff',
+          });
+          transaction.rentDetails.totalRentalPaid = transaction.rentDetails.totalRentalPayable;
+          transaction.rentDetails.outstandingRentalBalance = 0;
+          // Clear next due date
+          transaction.rentDetails.nextPaymentDueDate = null;
+        }
+      } else if (rentDetails) {
+        if (rentDetails.rentPricePerMonth !== undefined) transaction.rentDetails.rentPricePerMonth = Number(rentDetails.rentPricePerMonth);
+        if (rentDetails.durationMonths !== undefined) transaction.rentDetails.durationMonths = Number(rentDetails.durationMonths);
+        if (rentDetails.keyMoneyAmount !== undefined) transaction.rentDetails.keyMoneyAmount = Number(rentDetails.keyMoneyAmount);
+        if (rentDetails.keyMoneyPaidAmount !== undefined) transaction.rentDetails.keyMoneyPaidAmount = Number(rentDetails.keyMoneyPaidAmount);
+        if (rentDetails.paymentTerms !== undefined) transaction.rentDetails.paymentTerms = rentDetails.paymentTerms;
+        if (rentDetails.paymentReference !== undefined) transaction.rentDetails.paymentReference = rentDetails.paymentReference;
+        if (rentDetails.termsAndConditions !== undefined) transaction.rentDetails.termsAndConditions = rentDetails.termsAndConditions;
+        if (rentDetails.nextPaymentDueDate !== undefined) transaction.rentDetails.nextPaymentDueDate = rentDetails.nextPaymentDueDate ? new Date(rentDetails.nextPaymentDueDate) : null;
+        // Recalculate totals if price/duration changed
+        const qty = transaction.quantity || 1;
+        const totalRentValue = (transaction.rentDetails.durationMonths || 1) * (transaction.rentDetails.rentPricePerMonth || 0) * qty;
+        const keyMoney = transaction.rentDetails.hasKeyMoney ? (transaction.rentDetails.keyMoneyAmount || 0) : 0;
+        const delivery = transaction.deliveryCharges || 0;
+        transaction.rentDetails.totalRentValue = totalRentValue;
+        transaction.rentDetails.totalRentalPayable = totalRentValue + keyMoney + delivery;
+        transaction.rentDetails.outstandingRentalBalance = Math.max(0, transaction.rentDetails.totalRentalPayable - (transaction.rentDetails.totalRentalPaid || 0));
+      }
+    }
+
+    transaction.markModified('buyDetails');
+    transaction.markModified('rentDetails');
+    await transaction.save();
+
+    res.json({ success: true, transaction });
+  } catch (error) {
+    console.error('Update transaction error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getTransactions,
   getTransactionById,
   createTransaction,
+  payMonthRent,
+  updateTransaction,
   updateDeliveryStatus,
   processReturn,
   recordPayment,

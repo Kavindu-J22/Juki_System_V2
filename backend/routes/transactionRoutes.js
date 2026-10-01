@@ -4,6 +4,8 @@ const {
   getTransactions,
   getTransactionById,
   createTransaction,
+  payMonthRent,
+  updateTransaction,
   updateDeliveryStatus,
   processReturn,
   recordPayment,
@@ -17,7 +19,8 @@ router.route('/')
   .post(createTransaction);
 
 router.route('/:id')
-  .get(getTransactionById);
+  .get(getTransactionById)
+  .put(updateTransaction);
 
 router.route('/:id/delivery-status')
   .put(updateDeliveryStatus);
@@ -27,5 +30,8 @@ router.route('/:id/return')
 
 router.route('/:id/payments')
   .post(recordPayment);
+
+router.route('/:id/pay-month')
+  .post(payMonthRent);
 
 module.exports = router;
