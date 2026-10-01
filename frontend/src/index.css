@@ -59,25 +59,61 @@
   background: #475569;
 }
 
-/* Print Styles for official documents: Commercial Invoices, Rental Agreements, Delivery Notes, Return Notes */
+/* ============================================================
+   PRINT STYLES
+   The "visibility" trick is the only reliable way to print
+   a single element inside a React modal/app without a new window.
+   - visibility:hidden hides the entire page
+   - visibility:visible on .printable-document restores it
+   - position:fixed anchors it top-left, filling one A4 page
+   ============================================================ */
 @media print {
-  body {
-    background: #ffffff !important;
-    color: #000000 !important;
+  @page {
+    size: A4 portrait;
+    margin: 10mm 14mm;
   }
-  .no-print {
-    display: none !important;
+
+  /* Hide everything on the page */
+  body * {
+    visibility: hidden !important;
   }
-  .print-only {
-    display: block !important;
+
+  /* Show only the printable document and its children */
+  .printable-document,
+  .printable-document * {
+    visibility: visible !important;
   }
+
+  /* Anchor the document to fill the page from top-left */
   .printable-document {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 14px 20px !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
     background: #ffffff !important;
     color: #000000 !important;
-    box-shadow: none !important;
-    border: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    width: 100% !important;
+    overflow: visible !important;
+    font-size: 11px !important;
   }
+
+  /* Keep the dark header banner legible */
+  .printable-document .print-dark-banner {
+    background-color: #1e293b !important;
+    color: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* No mid-row table breaks */
+  table { page-break-inside: avoid; border-collapse: collapse; }
+  tr    { page-break-inside: avoid; page-break-after: auto; }
+
+  .no-print   { display: none !important; }
+  .print-only { display: block !important; visibility: visible !important; }
 }

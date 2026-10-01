@@ -31,6 +31,7 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [emailSending, setEmailSending] = useState(false);
+  const [printLoading, setPrintLoading] = useState(null); // holds txId being fetched for print
 
   const fetchStats = async () => {
     try {
@@ -49,6 +50,25 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
   useEffect(() => {
     fetchStats();
   }, []);
+
+  // Fetch the FULL transaction then open the print modal
+  // (recentDispatches only carries a summary; the PrintDocumentModal needs full details)
+  const handlePrintDispatch = async (txSummary) => {
+    try {
+      setPrintLoading(txSummary._id);
+      const res = await api.getTransactionById(txSummary._id);
+      if (res.success && res.transaction) {
+        const docType = res.transaction.transactionType === 'BUY' ? 'INVOICE' : 'AGREEMENT';
+        onPrint(res.transaction, docType);
+      } else {
+        addToast('error', 'Could not load invoice details. Please try from the Sales Ledger.');
+      }
+    } catch (err) {
+      addToast('error', 'Failed to fetch invoice data.');
+    } finally {
+      setPrintLoading(null);
+    }
+  };
 
   const handleSendEmailAlerts = async () => {
     try {
@@ -417,11 +437,14 @@ export const DashboardView = ({ onNavigate, onPrint }) => {
                     </td>
                     <td className="py-2.5 text-right">
                       <button
-                        onClick={() => onPrint(tx, tx.type === 'BUY' ? 'INVOICE' : 'AGREEMENT')}
-                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400"
+                        onClick={() => handlePrintDispatch(tx)}
+                        disabled={printLoading === tx._id}
+                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400 disabled:opacity-50"
                         title="Print Document"
                       >
-                        <Printer className="w-3.5 h-3.5" />
+                        {printLoading === tx._id
+                          ? <span className="inline-block w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                          : <Printer className="w-3.5 h-3.5" />}
                       </button>
                     </td>
                   </tr>
