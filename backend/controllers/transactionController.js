@@ -6,9 +6,25 @@ const { sendDispatchNotificationEmail } = require('../services/emailService');
 // Generate Unique Invoice / Agreement Number
 const generateInvoiceNumber = async (type) => {
   const prefix = type === 'BUY' ? 'INV' : 'AGR';
-  const count = await Transaction.countDocuments({ transactionType: type });
   const year = new Date().getFullYear();
-  return `${prefix}-${year}-${String(count + 101).padStart(4, '0')}`;
+  try {
+    const regex = new RegExp(`^${prefix}-${year}-(\\d+)`);
+    const txs = await Transaction.find({ invoiceNumber: regex }, 'invoiceNumber');
+    let maxNum = 100;
+    for (const t of txs) {
+      if (t.invoiceNumber) {
+        const match = t.invoiceNumber.match(regex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+    }
+    return `${prefix}-${year}-${String(maxNum + 1).padStart(4, '0')}`;
+  } catch (err) {
+    const count = await Transaction.countDocuments({ transactionType: type });
+    return `${prefix}-${year}-${String(count + 101).padStart(4, '0')}`;
+  }
 };
 
 // @desc    Get all transactions with filtering (BUY or RENT)

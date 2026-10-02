@@ -3,16 +3,23 @@ const Expense = require('../models/Expense');
 
 // Auto-generate SKU Code starting with M- (e.g., M-01, M-02)
 const generateSKU = async () => {
-  const lastMachine = await Machinery.findOne().sort({ createdAt: -1 });
-  if (!lastMachine || !lastMachine.sku) {
-    return 'M-01';
-  }
-  const match = lastMachine.sku.match(/M-(\d+)/);
-  if (match) {
-    const nextNum = parseInt(match[1], 10) + 1;
+  try {
+    const machines = await Machinery.find({}, 'sku');
+    let maxNum = 0;
+    for (const m of machines) {
+      if (m.sku) {
+        const match = m.sku.match(/M-(\d+)/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+    }
+    const nextNum = maxNum + 1;
     return `M-${String(nextNum).padStart(2, '0')}`;
+  } catch (err) {
+    return `M-${Date.now().toString().slice(-3)}`;
   }
-  return `M-${Date.now().toString().slice(-3)}`;
 };
 
 // @desc    Get all machinery inventory with search and filters

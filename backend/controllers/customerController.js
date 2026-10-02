@@ -3,16 +3,23 @@ const Transaction = require('../models/Transaction');
 
 // Generate Next CID (e.g. CUST-001, CUST-002)
 const generateCID = async () => {
-  const lastCustomer = await Customer.findOne().sort({ createdAt: -1 });
-  if (!lastCustomer || !lastCustomer.cid) {
-    return 'CUST-001';
-  }
-  const match = lastCustomer.cid.match(/CUST-(\d+)/);
-  if (match) {
-    const nextNum = parseInt(match[1], 10) + 1;
+  try {
+    const customers = await Customer.find({}, 'cid');
+    let maxNum = 0;
+    for (const c of customers) {
+      if (c.cid) {
+        const match = c.cid.match(/CUST-(\d+)/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+    }
+    const nextNum = maxNum + 1;
     return `CUST-${String(nextNum).padStart(3, '0')}`;
+  } catch (err) {
+    return `CUST-${Date.now().toString().slice(-4)}`;
   }
-  return `CUST-${Date.now().toString().slice(-4)}`;
 };
 
 // @desc    Get all customers with search & pagination
@@ -189,20 +196,32 @@ const createCustomer = async (req, res) => {
 
     const cid = await generateCID();
 
-    const customer = await Customer.create({
+    const customerData = {
       cid,
-      name,
-      nic,
-      phone,
-      email,
-      region,
-      address,
+      name: name.trim(),
+      phone: phone.trim(),
+      region: region.trim(),
+      address: address.trim(),
       previousBalance: Number(previousBalance) || 0,
-      notes,
-    });
+      notes: notes ? notes.trim() : '',
+    };
 
-    res.status(201).json({ success: true, customer });
+    if (nic && nic.trim()) customerData.nic = nic.trim();
+    if (email && email.trim()) customerData.email = email.trim();
+
+    try {
+      const customer = await Customer.create(customerData);
+      return res.status(201).json({ success: true, customer });
+    } catch (createErr) {
+      if (createErr.code === 11000 && createErr.keyPattern?.cid) {
+        customerData.cid = `CUST-${Date.now().toString().slice(-6)}`;
+        const customer = await Customer.create(customerData);
+        return res.status(201).json({ success: true, customer });
+      }
+      throw createErr;
+    }
   } catch (error) {
+    console.error('Error in createCustomer:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -212,7 +231,11 @@ const createCustomer = async (req, res) => {
 // @access  Private
 const updateCustomer = async (req, res) => {
   try {
-    const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, {
+    const updateData = { ...req.body };
+    if (updateData.email === '') delete updateData.email;
+    if (updateData.nic === '') delete updateData.nic;
+
+    const customer = await Customer.findByIdAndUpdate(req.params.id, updateData, {
       new: true,
       runValidators: true,
     });
