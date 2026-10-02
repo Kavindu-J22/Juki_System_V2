@@ -270,6 +270,21 @@ export const api = {
     });
     return res.json();
   },
+  updatePartnerEntry: async (id, data) => {
+    const res = await fetch(`${API_BASE}/partner-ledger/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+  deletePartnerEntry: async (id) => {
+    const res = await fetch(`${API_BASE}/partner-ledger/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
 
   // Settings
   getSettings: async () => {

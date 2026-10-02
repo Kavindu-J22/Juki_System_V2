@@ -303,7 +303,11 @@ const transactionSchema = new mongoose.Schema({
     globalRentalShare: {
       type: Number,
       default: 0,
-    }
+    },
+    profitSplitPercent: {
+      anujayaPercent: { type: Number, default: 50 },
+      globalPercent:  { type: Number, default: 50 },
+    },
   },
 
   // Payment receipts recorded against this transaction

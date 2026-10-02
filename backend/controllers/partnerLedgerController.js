@@ -94,7 +94,52 @@ const createPartnerEntry = async (req, res) => {
   }
 };
 
+// @desc    Update a partner ledger entry (edit Capital Draw, etc.)
+// @route   PUT /api/partner-ledger/:id
+// @access  Private (Admin & Partner)
+const updatePartnerEntry = async (req, res) => {
+  try {
+    const entry = await PartnerLedger.findById(req.params.id);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Ledger entry not found' });
+    }
+
+    const { amount, description, paymentMethod, referenceDoc, notes, entryType } = req.body;
+
+    if (amount !== undefined) entry.amount = Number(amount);
+    if (description !== undefined) entry.description = description;
+    if (paymentMethod !== undefined) entry.paymentMethod = paymentMethod;
+    if (referenceDoc !== undefined) entry.referenceDoc = referenceDoc;
+    if (notes !== undefined) entry.notes = notes;
+    if (entryType !== undefined) entry.entryType = entryType;
+    entry.approvedBy = req.user ? req.user.name : 'Authorized Signatory';
+
+    await entry.save();
+    res.json({ success: true, entry });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Delete a partner ledger entry
+// @route   DELETE /api/partner-ledger/:id
+// @access  Private (Admin only)
+const deletePartnerEntry = async (req, res) => {
+  try {
+    const entry = await PartnerLedger.findById(req.params.id);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Ledger entry not found' });
+    }
+    await entry.deleteOne();
+    res.json({ success: true, message: 'Ledger entry deleted' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getPartnerLedger,
   createPartnerEntry,
+  updatePartnerEntry,
+  deletePartnerEntry,
 };

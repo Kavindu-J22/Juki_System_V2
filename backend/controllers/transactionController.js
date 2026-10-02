@@ -1,6 +1,7 @@
 const Transaction = require('../models/Transaction');
 const Machinery = require('../models/Machinery');
 const Customer = require('../models/Customer');
+const PartnerLedger = require('../models/PartnerLedger');
 const { sendDispatchNotificationEmail } = require('../services/emailService');
 
 // Generate Unique Invoice / Agreement Number
@@ -349,9 +350,12 @@ const createTransaction = async (req, res) => {
       const totalRentalPayable = totalRentValue + keyMoneyAmount + (Number(deliveryCharges) || 0);
       const outstandingRentalBalance = Math.max(0, totalRentalPayable - totalRentalPaid);
 
-      // Profit split on rental
-      const anujayaRentalShare = totalRentalPaid * 0.5;
-      const globalRentalShare = totalRentalPaid * 0.5;
+      // Profit split on rental – read from payload, default 50/50
+      const rentAnujayaPct = Number(rentDetails.profitSplitPercent?.anujayaPercent ?? 50);
+      const rentGlobalPct  = Number(rentDetails.profitSplitPercent?.globalPercent  ?? 50);
+      const anujayaRentalShare = (totalRentalPaid * rentAnujayaPct) / 100;
+      const globalRentalShare  = (totalRentalPaid * rentGlobalPct)  / 100;
+
 
       processedRentDetails = {
         durationMonths,
@@ -382,6 +386,10 @@ const createTransaction = async (req, res) => {
         outstandingRentalBalance,
         anujayaRentalShare,
         globalRentalShare,
+        profitSplitPercent: {
+          anujayaPercent: rentAnujayaPct,
+          globalPercent:  rentGlobalPct,
+        },
       };
 
       if (keyMoneyPaidAmount > 0) {
@@ -427,6 +435,84 @@ const createTransaction = async (req, res) => {
       );
     }
     await machine.save();
+
+    // ── Auto-create PartnerLedger PROFIT_DISTRIBUTION entries ────────────────
+    try {
+      const ledgerEntries = [];
+
+      if (transactionType === 'BUY') {
+        const { anujayaNetProfit, globalNetProfit, profitSplitPercent: bps } = processedBuyDetails;
+        const splitLabel = bps.anujayaPercent === 100
+          ? '100% Anujaya'
+          : bps.globalPercent === 100
+            ? '100% Global'
+            : `${bps.anujayaPercent}/${bps.globalPercent}`;
+
+        if (anujayaNetProfit > 0) {
+          ledgerEntries.push({
+            partnerCompany: 'Anujaya Enterprises',
+            entryType: 'PROFIT_DISTRIBUTION',
+            amount: Math.round(anujayaNetProfit),
+            description: `Sales Profit – ${invoiceNumber} (${splitLabel} split, ${bps.anujayaPercent}%)`,
+            paymentMethod: processedBuyDetails.paymentTerms || 'Bank Wire/SLIPS',
+            referenceDoc: invoiceNumber,
+            approvedBy: req.user ? req.user.name : 'System',
+            notes: `Auto-generated on BUY dispatch. Gross Profit: LKR ${processedBuyDetails.totalGrossProfit.toLocaleString()}`,
+          });
+        }
+        if (globalNetProfit > 0) {
+          ledgerEntries.push({
+            partnerCompany: 'Global Enterprises',
+            entryType: 'PROFIT_DISTRIBUTION',
+            amount: Math.round(globalNetProfit),
+            description: `Sales Profit – ${invoiceNumber} (${splitLabel} split, ${bps.globalPercent}%)`,
+            paymentMethod: processedBuyDetails.paymentTerms || 'Bank Wire/SLIPS',
+            referenceDoc: invoiceNumber,
+            approvedBy: req.user ? req.user.name : 'System',
+            notes: `Auto-generated on BUY dispatch. Gross Profit: LKR ${processedBuyDetails.totalGrossProfit.toLocaleString()}`,
+          });
+        }
+      } else if (transactionType === 'RENT' && processedRentDetails.totalRentalPaid > 0) {
+        const { anujayaRentalShare: ars, globalRentalShare: grs, profitSplitPercent: rps } = processedRentDetails;
+        const splitLabel = rps.anujayaPercent === 100
+          ? '100% Anujaya'
+          : rps.globalPercent === 100
+            ? '100% Global'
+            : `${rps.anujayaPercent}/${rps.globalPercent}`;
+
+        if (ars > 0) {
+          ledgerEntries.push({
+            partnerCompany: 'Anujaya Enterprises',
+            entryType: 'PROFIT_DISTRIBUTION',
+            amount: Math.round(ars),
+            description: `Rental Advance – ${invoiceNumber} (${splitLabel} split, ${rps.anujayaPercent}%)`,
+            paymentMethod: processedRentDetails.paymentTerms || 'Bank Wire/SLIPS',
+            referenceDoc: invoiceNumber,
+            approvedBy: req.user ? req.user.name : 'System',
+            notes: `Auto-generated on RENT dispatch. Advance Paid: LKR ${processedRentDetails.totalRentalPaid.toLocaleString()}`,
+          });
+        }
+        if (grs > 0) {
+          ledgerEntries.push({
+            partnerCompany: 'Global Enterprises',
+            entryType: 'PROFIT_DISTRIBUTION',
+            amount: Math.round(grs),
+            description: `Rental Advance – ${invoiceNumber} (${splitLabel} split, ${rps.globalPercent}%)`,
+            paymentMethod: processedRentDetails.paymentTerms || 'Bank Wire/SLIPS',
+            referenceDoc: invoiceNumber,
+            approvedBy: req.user ? req.user.name : 'System',
+            notes: `Auto-generated on RENT dispatch. Advance Paid: LKR ${processedRentDetails.totalRentalPaid.toLocaleString()}`,
+          });
+        }
+      }
+
+      if (ledgerEntries.length > 0) {
+        await PartnerLedger.insertMany(ledgerEntries);
+      }
+    } catch (ledgerErr) {
+      console.warn('Could not auto-create partner ledger entries:', ledgerErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Trigger email notification asynchronously
     sendDispatchNotificationEmail({
