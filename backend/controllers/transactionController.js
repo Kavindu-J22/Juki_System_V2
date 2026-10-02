@@ -27,6 +27,62 @@ const generateInvoiceNumber = async (type) => {
   }
 };
 
+// Calculate rent schedule coverage and next due date
+const calculateRentScheduleStatus = (transaction) => {
+  const rd = transaction.rentDetails;
+  if (!rd) return { nextDueMonth: 1, nextDueDate: null, isAllPaid: false, monthPaidMap: {} };
+
+  const duration = rd.durationMonths || 1;
+  const monthlyTarget = (rd.rentPricePerMonth || 0) * (transaction.quantity || 1);
+  const start = new Date(transaction.dispatchDate || transaction.createdAt);
+
+  const rentPayments = (transaction.payments || []).filter(p => p.paymentType === 'MONTHLY_RENT');
+
+  const monthPaidMap = {};
+  for (let i = 1; i <= duration; i++) monthPaidMap[i] = 0;
+
+  const unassigned = [];
+  for (const p of rentPayments) {
+    const m = parseInt(p.monthCovered, 10);
+    if (!isNaN(m) && m >= 1 && m <= duration) {
+      monthPaidMap[m] = (monthPaidMap[m] || 0) + Number(p.amount || 0);
+    } else {
+      unassigned.push(p);
+    }
+  }
+
+  // Allocate unassigned or legacy payments sequentially
+  for (const p of unassigned) {
+    let amt = Number(p.amount || 0);
+    for (let i = 1; i <= duration; i++) {
+      if (amt <= 0) break;
+      const needed = Math.max(0, monthlyTarget - monthPaidMap[i]);
+      if (needed > 0) {
+        const alloc = Math.min(amt, needed);
+        monthPaidMap[i] += alloc;
+        amt -= alloc;
+      }
+    }
+  }
+
+  // Find earliest incomplete month
+  let nextDueMonth = null;
+  for (let i = 1; i <= duration; i++) {
+    if (monthPaidMap[i] < monthlyTarget) {
+      nextDueMonth = i;
+      break;
+    }
+  }
+
+  if (nextDueMonth) {
+    const nextDate = new Date(start);
+    nextDate.setMonth(nextDate.getMonth() + (nextDueMonth - 1));
+    return { nextDueMonth, nextDueDate: nextDate, isAllPaid: false, monthPaidMap };
+  } else {
+    return { nextDueMonth: duration + 1, nextDueDate: null, isAllPaid: true, monthPaidMap };
+  }
+};
+
 // @desc    Get all transactions with filtering (BUY or RENT)
 // @route   GET /api/transactions
 // @access  Private
@@ -225,17 +281,69 @@ const createTransaction = async (req, res) => {
       if (keyMoneyPaidAmount >= keyMoneyAmount && keyMoneyAmount > 0) keyMoneyStatus = 'Fully Paid';
       else if (keyMoneyPaidAmount > 0) keyMoneyStatus = 'Partial Payment';
 
-      const firstTwoMonthsAmount = rentPricePerMonth * Math.min(2, durationMonths) * requestedQty;
+      const perMonthRent = rentPricePerMonth * requestedQty;
+      const firstTwoMonthsAmount = perMonthRent * Math.min(2, durationMonths);
       const firstTwoMonthsPaidAmount = Number(rentDetails.firstTwoMonthsPaidAmount) || 0;
       let firstTwoMonthsStatus = 'Credit / Pending';
       if (firstTwoMonthsPaidAmount >= firstTwoMonthsAmount && firstTwoMonthsAmount > 0) firstTwoMonthsStatus = 'Fully Paid';
       else if (firstTwoMonthsPaidAmount > 0) firstTwoMonthsStatus = 'Partial Payment';
 
-      // Next payment due date (e.g. 1 month from dispatchDate or 2 months if first 2 months were paid)
+      // Distribute advance payment across Month 1 and Month 2
       const startDate = dispatchDate ? new Date(dispatchDate) : new Date();
+      if (firstTwoMonthsPaidAmount > 0) {
+        // Month 1 advance allocation
+        const month1Amount = Math.min(firstTwoMonthsPaidAmount, perMonthRent);
+        if (month1Amount > 0) {
+          initialPayments.push({
+            date: startDate,
+            amount: month1Amount,
+            paymentType: 'MONTHLY_RENT',
+            paymentMethod: rentDetails.paymentTerms || 'Bank Wire/SLIPS',
+            reference: rentDetails.paymentReference || 'Month 1 Advance Rent',
+            monthCovered: '1',
+            notes: month1Amount === perMonthRent
+              ? 'First month advance rent captured at dispatch'
+              : `Partial first month advance rent (LKR ${month1Amount.toLocaleString()} of ${perMonthRent.toLocaleString()})`,
+            receivedBy: req.user ? req.user.name : 'Staff',
+          });
+        }
+
+        // Month 2 advance allocation
+        const remainingForMonth2 = firstTwoMonthsPaidAmount - month1Amount;
+        const month2Amount = Math.min(remainingForMonth2, perMonthRent);
+        if (month2Amount > 0) {
+          initialPayments.push({
+            date: startDate,
+            amount: month2Amount,
+            paymentType: 'MONTHLY_RENT',
+            paymentMethod: rentDetails.paymentTerms || 'Bank Wire/SLIPS',
+            reference: rentDetails.paymentReference || 'Month 2 Advance Rent',
+            monthCovered: '2',
+            notes: month2Amount === perMonthRent
+              ? 'Second month advance rent captured at dispatch'
+              : `Partial second month advance rent (LKR ${month2Amount.toLocaleString()} of ${perMonthRent.toLocaleString()})`,
+            receivedBy: req.user ? req.user.name : 'Staff',
+          });
+        }
+      }
+
+      // Next payment due date & current cycle
       const nextDue = new Date(startDate);
-      const advanceMonths = firstTwoMonthsStatus === 'Fully Paid' ? 2 : 1;
-      nextDue.setMonth(nextDue.getMonth() + advanceMonths);
+      let initialCycle = 1;
+      const month1Paid = Math.min(firstTwoMonthsPaidAmount, perMonthRent);
+      const month2Paid = Math.min(Math.max(0, firstTwoMonthsPaidAmount - month1Paid), perMonthRent);
+      if (month1Paid >= perMonthRent && month2Paid >= perMonthRent) {
+        // Months 1 & 2 fully covered -> Next due is Month 3 (2 months after start)
+        nextDue.setMonth(nextDue.getMonth() + 2);
+        initialCycle = 3;
+      } else if (month1Paid >= perMonthRent) {
+        // Month 1 covered, Month 2 partial or unpaid -> Next due is Month 2 (1 month after start)
+        nextDue.setMonth(nextDue.getMonth() + 1);
+        initialCycle = 2;
+      } else {
+        // Month 1 not fully covered -> Due Month 1
+        initialCycle = 1;
+      }
 
       const totalRentalPaid = keyMoneyPaidAmount + firstTwoMonthsPaidAmount;
       const totalRentalPayable = totalRentValue + keyMoneyAmount + (Number(deliveryCharges) || 0);
@@ -265,7 +373,7 @@ const createTransaction = async (req, res) => {
         ],
         warrantyCertificateTerms: rentDetails.warrantyCertificateTerms || 'Standard 12 Months Consortium Technical & Service Warranty on Electronics and Mechanical Drive Assemblies.',
         nextPaymentDueDate: nextDue,
-        currentMonthCycle: 1,
+        currentMonthCycle: initialCycle,
         returnStatus: 'In Use',
         monthsBilled: durationMonths,
         monthsWaived: 0,
@@ -284,18 +392,6 @@ const createTransaction = async (req, res) => {
           paymentMethod: rentDetails.paymentTerms || 'Bank Wire/SLIPS',
           reference: rentDetails.paymentReference || 'Key Money Deposit',
           notes: 'Security Deposit captured at dispatch',
-          receivedBy: req.user ? req.user.name : 'Staff',
-        });
-      }
-
-      if (firstTwoMonthsPaidAmount > 0) {
-        initialPayments.push({
-          date: startDate,
-          amount: firstTwoMonthsPaidAmount,
-          paymentType: 'MONTHLY_RENT',
-          paymentMethod: rentDetails.paymentTerms || 'Bank Wire/SLIPS',
-          reference: rentDetails.paymentReference || 'Initial Advance Rent',
-          notes: 'First advance rent payment captured at dispatch',
           receivedBy: req.user ? req.user.name : 'Staff',
         });
       }
@@ -482,13 +578,24 @@ const recordPayment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Transaction not found' });
     }
 
+    let targetMonth = monthCovered ? String(monthCovered) : '';
+
+    if (transaction.transactionType === 'RENT' && (!paymentType || paymentType === 'MONTHLY_RENT')) {
+      if (!targetMonth) {
+        const schedule = calculateRentScheduleStatus(transaction);
+        if (schedule.nextDueMonth <= (transaction.rentDetails.durationMonths || 1)) {
+          targetMonth = String(schedule.nextDueMonth);
+        }
+      }
+    }
+
     const paymentEntry = {
       date: new Date(),
       amount: paymentAmount,
-      paymentType: paymentType || 'MONTHLY_RENT',
+      paymentType: paymentType || (transaction.transactionType === 'RENT' ? 'MONTHLY_RENT' : 'SALES_SETTLEMENT'),
       paymentMethod: paymentMethod || 'Bank Wire/SLIPS',
       reference: reference || '',
-      monthCovered: monthCovered || '',
+      monthCovered: targetMonth,
       notes: notes || '',
       receivedBy: req.user ? req.user.name : 'Staff',
     };
@@ -510,15 +617,14 @@ const recordPayment = async (req, res) => {
         (transaction.rentDetails.totalRentalPayable || 0) - transaction.rentDetails.totalRentalPaid
       );
 
-      // Advance due date by 1 month if monthly rent collection recorded
-      if (paymentType === 'MONTHLY_RENT' && transaction.rentDetails.nextPaymentDueDate) {
-        const nextDate = new Date(transaction.rentDetails.nextPaymentDueDate);
-        nextDate.setMonth(nextDate.getMonth() + 1);
-        transaction.rentDetails.nextPaymentDueDate = nextDate;
-        transaction.rentDetails.currentMonthCycle = (transaction.rentDetails.currentMonthCycle || 1) + 1;
-      }
+      // Recalculate schedule status and nextPaymentDueDate
+      const scheduleStatus = calculateRentScheduleStatus(transaction);
+      transaction.rentDetails.nextPaymentDueDate = scheduleStatus.nextDueDate;
+      transaction.rentDetails.currentMonthCycle = scheduleStatus.nextDueMonth;
+      transaction.markModified('rentDetails');
     }
 
+    transaction.markModified('payments');
     await transaction.save();
     res.json({ success: true, message: 'Payment recorded successfully', transaction });
   } catch (error) {
@@ -531,7 +637,7 @@ const recordPayment = async (req, res) => {
 // @access  Private
 const payMonthRent = async (req, res) => {
   try {
-    const { monthNumber, paymentMethod, reference, notes } = req.body;
+    const { monthNumber, paymentMethod, reference, notes, amount } = req.body;
     const transaction = await Transaction.findById(req.params.id);
 
     if (!transaction) {
@@ -541,46 +647,66 @@ const payMonthRent = async (req, res) => {
       return res.status(400).json({ success: false, message: 'This endpoint is for RENT transactions only' });
     }
 
-    // Check if this month is already covered
-    const alreadyCovered = transaction.payments.some(
-      (p) => p.paymentType === 'MONTHLY_RENT' && String(p.monthCovered) === String(monthNumber)
-    );
-    if (alreadyCovered) {
-      return res.status(400).json({ success: false, message: `Month ${monthNumber} rent is already recorded as paid` });
+    const monthlyTarget = (transaction.rentDetails?.rentPricePerMonth || 0) * (transaction.quantity || 1);
+    const mNum = parseInt(monthNumber, 10);
+    if (isNaN(mNum) || mNum < 1) {
+      return res.status(400).json({ success: false, message: 'Invalid month number' });
     }
 
-    const monthlyAmount = (transaction.rentDetails.rentPricePerMonth || 0) * (transaction.quantity || 1);
+    // Calculate how much has already been paid for this month
+    const existingPaid = (transaction.payments || [])
+      .filter((p) => p.paymentType === 'MONTHLY_RENT' && String(p.monthCovered) === String(mNum))
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+    const remainingForMonth = Math.max(0, monthlyTarget - existingPaid);
+    if (remainingForMonth <= 0) {
+      return res.status(400).json({ success: false, message: `Month ${mNum} rent is already fully paid` });
+    }
+
+    // If an explicit amount was provided (e.g. paying partial or paying rest), use it up to remaining
+    const paymentToRecord = amount ? Math.min(Number(amount), remainingForMonth) : remainingForMonth;
+    if (paymentToRecord <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid payment amount' });
+    }
+
+    const isClearingRest = (existingPaid + paymentToRecord) >= monthlyTarget;
 
     const paymentEntry = {
       date: new Date(),
-      amount: monthlyAmount,
+      amount: paymentToRecord,
       paymentType: 'MONTHLY_RENT',
       paymentMethod: paymentMethod || 'Bank Wire/SLIPS',
-      reference: reference || `Month ${monthNumber} Rent`,
-      monthCovered: String(monthNumber),
-      notes: notes || `Month ${monthNumber} rental payment`,
+      reference: reference || `Month ${mNum} Rent Payment`,
+      monthCovered: String(mNum),
+      notes: notes || (isClearingRest
+        ? `Month ${mNum} rent completed (LKR ${paymentToRecord.toLocaleString()})`
+        : `Partial payment for Month ${mNum} (LKR ${paymentToRecord.toLocaleString()} of remaining LKR ${remainingForMonth.toLocaleString()})`),
       receivedBy: req.user ? req.user.name : 'Staff',
     };
 
     transaction.payments.push(paymentEntry);
-    transaction.rentDetails.totalRentalPaid = (transaction.rentDetails.totalRentalPaid || 0) + monthlyAmount;
+    transaction.rentDetails.totalRentalPaid = (transaction.rentDetails.totalRentalPaid || 0) + paymentToRecord;
     transaction.rentDetails.outstandingRentalBalance = Math.max(
       0,
       (transaction.rentDetails.totalRentalPayable || 0) - transaction.rentDetails.totalRentalPaid
     );
 
-    // Advance nextPaymentDueDate by 1 month
-    if (transaction.rentDetails.nextPaymentDueDate) {
-      const nextDate = new Date(transaction.rentDetails.nextPaymentDueDate);
-      nextDate.setMonth(nextDate.getMonth() + 1);
-      transaction.rentDetails.nextPaymentDueDate = nextDate;
-    }
-    transaction.rentDetails.currentMonthCycle = (transaction.rentDetails.currentMonthCycle || 1) + 1;
+    // Recalculate rent schedule status and advance nextPaymentDueDate
+    const scheduleStatus = calculateRentScheduleStatus(transaction);
+    transaction.rentDetails.nextPaymentDueDate = scheduleStatus.nextDueDate;
+    transaction.rentDetails.currentMonthCycle = scheduleStatus.nextDueMonth;
 
     transaction.markModified('rentDetails');
+    transaction.markModified('payments');
     await transaction.save();
 
-    res.json({ success: true, message: `Month ${monthNumber} rent payment recorded`, transaction });
+    res.json({
+      success: true,
+      message: isClearingRest
+        ? `Month ${mNum} rent recorded as fully paid!`
+        : `Payment of LKR ${paymentToRecord.toLocaleString()} recorded for Month ${mNum} (Remaining: LKR ${(remainingForMonth - paymentToRecord).toLocaleString()})`,
+      transaction,
+    });
   } catch (error) {
     console.error('Pay month rent error:', error);
     res.status(500).json({ success: false, message: error.message });

@@ -15,8 +15,8 @@ const fmtDate = (d) =>
 
 /**
  * Build month-by-month schedule for a rent transaction.
- * Uses payment.monthCovered to determine which months are paid.
- * Falls back to sequential assignment for legacy payments without monthCovered.
+ * Tracks per-month paid amounts, remaining balances, and partial payment statuses.
+ * Supports advance payments split across months, explicit monthCovered, and legacy sequential allocation.
  */
 const buildRentTimeline = (tx) => {
   const rd = tx.rentDetails;
@@ -26,62 +26,65 @@ const buildRentTimeline = (tx) => {
   const monthly = (rd.rentPricePerMonth || 0) * (tx.quantity || 1);
   const start = new Date(tx.dispatchDate || tx.createdAt);
 
-  // Separate monthly rent payments from key-money
   const rentPayments = (tx.payments || []).filter(
     (p) => p.paymentType === 'MONTHLY_RENT'
   );
-
-  // Build a set of covered month numbers (string keys like "1", "2" …)
-  const coveredMonths = new Set(
-    rentPayments
-      .filter((p) => p.monthCovered && !isNaN(Number(p.monthCovered)))
-      .map((p) => String(p.monthCovered))
-  );
-
-  // For legacy payments that have no monthCovered, assign them sequentially
-  const legacyPayments = rentPayments.filter(
-    (p) => !p.monthCovered || isNaN(Number(p.monthCovered))
-  );
-  let legacyIdx = 0;
-  const legacyAssigned = new Set();
-  for (let m = 1; m <= duration && legacyIdx < legacyPayments.length; m++) {
-    if (!coveredMonths.has(String(m))) {
-      coveredMonths.add(String(m));
-      legacyAssigned.add(String(m));
-      legacyIdx++;
-    }
-  }
-
-  // Build payment lookup by monthCovered for display
-  const paymentByMonth = {};
-  rentPayments
-    .filter((p) => p.monthCovered && !isNaN(Number(p.monthCovered)))
-    .forEach((p) => { paymentByMonth[String(p.monthCovered)] = p; });
-  // Assign legacy payments sequentially too
-  legacyIdx = 0;
-  for (let m = 1; m <= duration && legacyIdx < legacyPayments.length; m++) {
-    if (legacyAssigned.has(String(m))) {
-      paymentByMonth[String(m)] = legacyPayments[legacyIdx++];
-    }
-  }
 
   const months = [];
   for (let i = 0; i < duration; i++) {
     const monthNum = i + 1;
     const dueDate = new Date(start);
     dueDate.setMonth(dueDate.getMonth() + i);
-    const p = paymentByMonth[String(monthNum)] || null;
     months.push({
       month: monthNum,
       dueDate,
       amount: monthly,
-      paid: coveredMonths.has(String(monthNum)),
-      paidDate: p?.date || null,
-      paidAmount: p?.amount || 0,
-      method: p?.paymentMethod || '',
-      ref: p?.reference || '',
+      paidAmount: 0,
+      payments: [],
     });
   }
+
+  // 1. Allocate payments with explicit monthCovered
+  const unassigned = [];
+  for (const p of rentPayments) {
+    const mNum = parseInt(p.monthCovered, 10);
+    if (!isNaN(mNum) && mNum >= 1 && mNum <= duration) {
+      const target = months[mNum - 1];
+      target.paidAmount += Number(p.amount || 0);
+      target.payments.push(p);
+    } else {
+      unassigned.push(p);
+    }
+  }
+
+  // 2. Allocate legacy / unassigned payments sequentially across incomplete months
+  for (const p of unassigned) {
+    let unallocated = Number(p.amount || 0);
+    for (const m of months) {
+      if (unallocated <= 0) break;
+      const needed = Math.max(0, m.amount - m.paidAmount);
+      if (needed > 0) {
+        const allocated = Math.min(unallocated, needed);
+        m.paidAmount += allocated;
+        m.payments.push({ ...p, allocatedAmount: allocated });
+        unallocated -= allocated;
+      }
+    }
+  }
+
+  // 3. Finalize each month's status and remaining balance
+  for (const m of months) {
+    m.remainingAmount = Math.max(0, m.amount - m.paidAmount);
+    m.paid = m.paidAmount >= m.amount && m.amount > 0;
+    m.isPartial = m.paidAmount > 0 && m.paidAmount < m.amount;
+    m.isUnpaid = m.paidAmount === 0;
+
+    const lastP = m.payments[m.payments.length - 1];
+    m.paidDate = lastP?.date || null;
+    m.method = lastP?.paymentMethod || '';
+    m.ref = lastP?.reference || '';
+  }
+
   return months;
 };
 
@@ -104,6 +107,9 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
   const [showMarkPaidModal, setShowMarkPaidModal] = useState(false);   // BUY only
   const [showPayMonthModal, setShowPayMonthModal] = useState(false);   // RENT: pay next month
   const [payingMonthNum, setPayingMonthNum] = useState(null);          // RENT: per-month pay
+  const [payingMonthRemaining, setPayingMonthRemaining] = useState(0); // RENT: remaining balance for targeted month
+  const [payingMonthTarget, setPayingMonthTarget] = useState(0);       // RENT: full monthly rent target
+  const [payingMonthIsPartial, setPayingMonthIsPartial] = useState(false);
   const [selectedTx, setSelectedTx] = useState(null);
 
   // Payment Form
@@ -113,6 +119,7 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
     paymentMethod: 'Bank Wire/SLIPS',
     reference: '',
     notes: '',
+    monthCovered: '',
   });
 
   // Return Form
@@ -125,7 +132,7 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
   const [editForm, setEditForm] = useState({});
 
   // Mark Paid / Pay Month Form
-  const [markPaidForm, setMarkPaidForm] = useState({ paymentMethod: 'Bank Wire/SLIPS', reference: '' });
+  const [markPaidForm, setMarkPaidForm] = useState({ paymentMethod: 'Bank Wire/SLIPS', reference: '', amount: 0 });
 
   // Inspector payment section toggle
   const [showInspectorPayments, setShowInspectorPayments] = useState(true);
@@ -177,14 +184,24 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
   // Generic record payment (free amount, any type)
   const handleOpenPayment = (tx) => {
     setSelectedTx(tx);
+    let defaultMonth = '';
+    let defaultAmount = 0;
+    if (tx.transactionType === 'RENT') {
+      const timeline = buildRentTimeline(tx);
+      const nextIncomplete = timeline.find((m) => !m.paid) || timeline[0];
+      defaultMonth = nextIncomplete ? String(nextIncomplete.month) : '1';
+      defaultAmount = nextIncomplete ? nextIncomplete.remainingAmount : ((tx.rentDetails?.rentPricePerMonth || 0) * (tx.quantity || 1));
+    } else {
+      defaultAmount = tx.buyDetails?.outstandingAmount || 0;
+    }
+
     setPaymentData({
-      amount: tx.transactionType === 'RENT'
-        ? tx.rentDetails?.rentPricePerMonth * (tx.quantity || 1)
-        : tx.buyDetails?.outstandingAmount,
+      amount: defaultAmount,
       paymentType: tx.transactionType === 'RENT' ? 'MONTHLY_RENT' : 'SALES_SETTLEMENT',
       paymentMethod: 'Bank Wire/SLIPS',
       reference: '',
       notes: '',
+      monthCovered: defaultMonth,
     });
     setShowPaymentModal(true);
   };
@@ -306,21 +323,31 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
   };
 
   // RENT — Pay Next Month's Rent (table button)
-  const handleOpenPayMonth = (tx) => {
+  const handleOpenPayMonth = (tx, specificMonth = null) => {
     setSelectedTx(tx);
     const timeline = buildRentTimeline(tx);
-    const nextUnpaid = timeline.find((m) => !m.paid);
-    setPayingMonthNum(nextUnpaid ? nextUnpaid.month : null);
-    setMarkPaidForm({ paymentMethod: 'Bank Wire/SLIPS', reference: '' });
+    const targetMonth = specificMonth || timeline.find((m) => !m.paid);
+    if (!targetMonth) {
+      addToast('info', 'All months in this rental agreement are fully paid!');
+      return;
+    }
+    setPayingMonthNum(targetMonth.month);
+    setPayingMonthRemaining(targetMonth.remainingAmount);
+    setPayingMonthTarget(targetMonth.amount);
+    setPayingMonthIsPartial(targetMonth.isPartial);
+    setMarkPaidForm({
+      paymentMethod: 'Bank Wire/SLIPS',
+      reference: '',
+      amount: targetMonth.remainingAmount,
+    });
     setShowPayMonthModal(true);
   };
 
   // RENT — Pay a specific month from the timeline (inspector)
   const handlePaySpecificMonth = (tx, monthNum) => {
-    setSelectedTx(tx);
-    setPayingMonthNum(monthNum);
-    setMarkPaidForm({ paymentMethod: 'Bank Wire/SLIPS', reference: '' });
-    setShowPayMonthModal(true);
+    const timeline = buildRentTimeline(tx);
+    const targetMonth = timeline.find((m) => m.month === monthNum);
+    handleOpenPayMonth(tx, targetMonth);
   };
 
   const handleConfirmPayMonth = async (e) => {
@@ -329,9 +356,11 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
       addToast('error', 'No unpaid month found');
       return;
     }
+    const payAmt = Number(markPaidForm.amount) || payingMonthRemaining;
     try {
       const res = await api.payMonthRent(selectedTx._id, {
         monthNumber: payingMonthNum,
+        amount: payAmt,
         paymentMethod: markPaidForm.paymentMethod,
         reference: markPaidForm.reference,
       });
@@ -446,11 +475,11 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
                   // BUY: show mark-as-paid only when outstanding > 0
                   const showBuyMarkPaid = !isRent && (tx.buyDetails?.outstandingAmount || 0) > 0;
 
-                  // RENT: show "pay this month" only when outstanding > 0 and not fully returned
+                  // RENT: show "pay this month" only when an incomplete month exists and not fully returned
                   const timeline = isRent ? buildRentTimeline(tx) : [];
-                  const nextUnpaidMonth = isRent ? timeline.find((m) => !m.paid) : null;
+                  const nextIncompleteMonth = isRent ? timeline.find((m) => !m.paid) : null;
                   const showRentPayMonth = isRent
-                    && !!nextUnpaidMonth
+                    && !!nextIncompleteMonth
                     && tx.rentDetails?.returnStatus !== 'Returned';
 
                   return (
@@ -578,9 +607,11 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
 
                           {/* ── RENT only: Pay This Month's Rent ── */}
                           {showRentPayMonth && (
-                            <button onClick={() => handleOpenPayMonth(tx)}
+                            <button onClick={() => handleOpenPayMonth(tx, nextIncompleteMonth)}
                               className="p-1.5 rounded-lg bg-amber-950 hover:bg-amber-900 text-amber-400 border border-amber-800 transition"
-                              title={`Pay Month ${nextUnpaidMonth.month} Rent`}>
+                              title={nextIncompleteMonth.isPartial
+                                ? `Pay Month ${nextIncompleteMonth.month} Rest Amount (LKR ${fmt(nextIncompleteMonth.remainingAmount)})`
+                                : `Pay Month ${nextIncompleteMonth.month} Rent (LKR ${fmt(nextIncompleteMonth.amount)})`}>
                               <CreditCard className="w-3.5 h-3.5" />
                             </button>
                           )}
@@ -633,8 +664,8 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
         const mach = tx.machinerySnapshot || tx.machinery || {};
         const timeline = isRent ? buildRentTimeline(tx) : [];
         const rd = tx.rentDetails;
-        const bd = tx.buyDetails;
         const paidMonths = timeline.filter((m) => m.paid).length;
+        const partialMonths = timeline.filter((m) => m.isPartial).length;
 
         return (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex justify-end">
@@ -774,7 +805,9 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
                       className="w-full flex items-center justify-between p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs font-bold text-slate-300 hover:bg-slate-900 transition">
                       <span>
                         Month-by-Month Schedule &nbsp;
-                        <span className="font-normal text-slate-500">({paidMonths}/{timeline.length} months paid)</span>
+                        <span className="font-normal text-slate-500">
+                          ({paidMonths}/{timeline.length} months paid{partialMonths > 0 ? `, ${partialMonths} partial` : ''})
+                        </span>
                       </span>
                       {showInspectorPayments ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                     </button>
@@ -786,34 +819,44 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
                             className={`flex items-center justify-between gap-2 p-2.5 rounded-lg border text-[11px] ${
                               m.paid
                                 ? 'bg-emerald-950/30 border-emerald-800/50'
+                                : m.isPartial
+                                ? 'bg-amber-950/30 border-amber-800/50'
                                 : 'bg-rose-950/20 border-rose-800/30'
                             }`}>
                             {/* Left: month badge + info */}
                             <div className="flex items-center gap-2 min-w-0">
                               <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                                m.paid ? 'bg-emerald-600 text-white' : 'bg-rose-900 text-rose-300'
+                                m.paid
+                                  ? 'bg-emerald-600 text-white'
+                                  : m.isPartial
+                                  ? 'bg-amber-600 text-white'
+                                  : 'bg-rose-900 text-rose-300'
                               }`}>{m.month}</span>
                               <div className="min-w-0">
-                                <div className={m.paid ? 'text-emerald-300 font-semibold' : 'text-rose-300'}>
-                                  {m.paid
-                                    ? `Paid — LKR ${fmt(m.paidAmount)}`
-                                    : `Unpaid — LKR ${fmt(m.amount)} due`}
+                                <div className={m.paid ? 'text-emerald-300 font-semibold' : m.isPartial ? 'text-amber-300 font-semibold' : 'text-rose-300 font-semibold'}>
+                                  {m.paid && `✅ Paid — LKR ${fmt(m.paidAmount)}`}
+                                  {m.isPartial && `🟡 Partially Paid — LKR ${fmt(m.paidAmount)} / ${fmt(m.amount)} (Rest: LKR ${fmt(m.remainingAmount)})`}
+                                  {m.isUnpaid && `🔴 Unpaid — LKR ${fmt(m.amount)} due`}
                                 </div>
                                 <div className="text-slate-500 text-[10px] truncate">
                                   Due: {fmtDate(m.dueDate)}
-                                  {m.paid && m.paidDate && ` • Rcvd: ${fmtDate(m.paidDate)}`}
-                                  {m.paid && m.method && ` (${m.method})`}
-                                  {m.paid && m.ref && ` #${m.ref}`}
+                                  {m.paidAmount > 0 && m.paidDate && ` • Last Rcvd: ${fmtDate(m.paidDate)}`}
+                                  {m.paidAmount > 0 && m.method && ` (${m.method})`}
+                                  {m.paidAmount > 0 && m.ref && ` #${m.ref}`}
                                 </div>
                               </div>
                             </div>
-                            {/* Right: Pay button for unpaid months */}
+                            {/* Right: Pay / Pay Rest button for incomplete months */}
                             {!m.paid && tx.rentDetails?.returnStatus !== 'Returned' && (
                               <button
                                 onClick={() => handlePaySpecificMonth(tx, m.month)}
-                                className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-[10px] transition">
+                                className={`shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-white font-bold text-[10px] transition ${
+                                  m.isPartial
+                                    ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30'
+                                    : 'bg-rose-700 hover:bg-rose-600 shadow-rose-700/30'
+                                }`}>
                                 <CreditCard className="w-3 h-3" />
-                                Pay
+                                {m.isPartial ? `Pay Rest (LKR ${fmt(m.remainingAmount)})` : `Pay`}
                               </button>
                             )}
                           </div>
@@ -863,8 +906,40 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
               <button onClick={() => setShowPaymentModal(false)} className="text-slate-400"><X className="w-4 h-4" /></button>
             </div>
             <form onSubmit={handleRecordPayment} className="space-y-3 text-xs">
+              {selectedTx.transactionType === 'RENT' && (
+                <div>
+                  <label className="block text-slate-400 mb-1">Apply to Month Schedule</label>
+                  <select
+                    value={paymentData.monthCovered}
+                    onChange={(e) => {
+                      const chosenMonth = e.target.value;
+                      const timeline = buildRentTimeline(selectedTx);
+                      const mObj = timeline.find((m) => String(m.month) === String(chosenMonth));
+                      setPaymentData({
+                        ...paymentData,
+                        monthCovered: chosenMonth,
+                        amount: mObj ? mObj.remainingAmount : paymentData.amount,
+                      });
+                    }}
+                    className="w-full glass-input px-3 py-2 rounded-xl text-xs font-semibold"
+                  >
+                    {buildRentTimeline(selectedTx).map((m) => (
+                      <option key={m.month} value={String(m.month)} className="bg-slate-900">
+                        Month {m.month} — {m.paid ? '✅ Fully Paid' : m.isPartial ? `🟡 Partial (Rest: LKR ${fmt(m.remainingAmount)})` : `🔴 Unpaid (Due: LKR ${fmt(m.amount)})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
-                <label className="block text-slate-400 mb-1">Payment Amount (LKR) *</label>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-slate-400">Payment Amount (LKR) *</label>
+                  {selectedTx.transactionType === 'RENT' && paymentData.monthCovered && (
+                    <span className="text-[10px] text-cyan-400 font-semibold">
+                      Partial payments supported
+                    </span>
+                  )}
+                </div>
                 <input type="number" value={paymentData.amount}
                   onChange={(e) => setPaymentData({ ...paymentData, amount: Number(e.target.value) })}
                   className="w-full glass-input px-3.5 py-2 rounded-xl font-bold text-emerald-400" required />
@@ -966,7 +1041,7 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
               <div className="flex items-center gap-2">
                 <CreditCard className="w-5 h-5 text-amber-400" />
                 <h3 className="font-bold text-white text-sm">
-                  Pay Month {payingMonthNum} Rent
+                  Pay Month {payingMonthNum} Rent {payingMonthIsPartial ? '(Rest Amount)' : ''}
                 </h3>
               </div>
               <button onClick={() => setShowPayMonthModal(false)} className="text-slate-400"><X className="w-4 h-4" /></button>
@@ -976,13 +1051,42 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
               <div>
                 Month <strong className="text-white">{payingMonthNum}</strong> of <strong className="text-white">{selectedTx.rentDetails?.durationMonths}</strong>
               </div>
-              <div>
-                Amount: <strong className="text-white">
-                  LKR {fmt((selectedTx.rentDetails?.rentPricePerMonth || 0) * (selectedTx.quantity || 1))}
-                </strong>
-              </div>
+              {payingMonthIsPartial ? (
+                <>
+                  <div className="text-slate-400">
+                    Already Paid: <strong className="text-emerald-400">LKR {fmt(payingMonthTarget - payingMonthRemaining)}</strong>
+                  </div>
+                  <div>
+                    Remaining Balance Due: <strong className="text-amber-300">LKR {fmt(payingMonthRemaining)}</strong>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  Full Month Rent Due: <strong className="text-white">
+                    LKR {fmt(payingMonthTarget)}
+                  </strong>
+                </div>
+              )}
             </div>
             <form onSubmit={handleConfirmPayMonth} className="space-y-3 text-xs">
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-slate-400">Payment Amount (LKR) *</label>
+                  {payingMonthIsPartial && (
+                    <span className="text-[10px] text-amber-400 font-semibold">
+                      Rest balance: LKR {fmt(payingMonthRemaining)}
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  max={payingMonthRemaining}
+                  value={markPaidForm.amount}
+                  onChange={(e) => setMarkPaidForm({ ...markPaidForm, amount: Number(e.target.value) })}
+                  className="w-full glass-input px-3.5 py-2 rounded-xl font-bold text-emerald-400"
+                  required
+                />
+              </div>
               <div>
                 <label className="block text-slate-400 mb-1">Payment Method</label>
                 <select value={markPaidForm.paymentMethod}
@@ -1003,8 +1107,8 @@ export const SalesLedgerView = ({ onPrint, initialSearch = '', onClearInitialSea
                 <button type="button" onClick={() => setShowPayMonthModal(false)}
                   className="px-3 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold">Cancel</button>
                 <button type="submit"
-                  className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 font-bold text-white">
-                  Confirm Month {payingMonthNum} Payment
+                  className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 font-bold text-white shadow-lg shadow-amber-600/30">
+                  Confirm Payment (LKR {fmt(markPaidForm.amount)})
                 </button>
               </div>
             </form>
